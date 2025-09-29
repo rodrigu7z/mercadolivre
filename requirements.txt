@@ -1,0 +1,23 @@
+# Flask Web Framework
+Flask>=2.3.0
+
+# PDF Processing
+pdfplumber>=0.9.0
+PyMuPDF>=1.23.0
+
+# Image Processing and OCR
+Pillow>=10.0.0
+pytesseract>=0.3.10
+
+# Barcode Processing
+pyzbar>=0.1.9
+python-barcode>=0.14.0
+
+# PDF Generation
+reportlab>=4.0.0
+
+# File handling
+pathlib2>=2.3.7
+
+# Additional utilities
+Werkzeug>=2.3.0
