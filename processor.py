@@ -328,7 +328,8 @@ def compose_output_pdf_multiple(out_path: Path,
                                destinatario: Optional[str],
                                barcode_img: Optional[Image.Image],
                                chave: Optional[str],
-                               original_etiqueta_path: Optional[Path] = None) -> None:
+                               original_etiqueta_path: Optional[Path] = None,
+                               barcode_map: Optional[Dict[str, str]] = None) -> None:
     c = canvas.Canvas(str(out_path), pagesize=A4)
     width, height = A4
     
@@ -391,10 +392,20 @@ def compose_output_pdf_multiple(out_path: Path,
                           width=img_width, height=img_height, 
                           preserveAspectRatio=True, anchor='c')
                 
-                # ADICIONAR CÓDIGO DE BARRAS NA ETIQUETA (se disponível)
-                if barcode_img:
+                # ADICIONAR CÓDIGO DE BARRAS ESPECÍFICO PARA ESTE TRACKING (se disponível)
+                current_barcode_img = None
+                if barcode_map and tracking in barcode_map:
+                    # Gerar código de barras específico para este tracking
+                    barcode_value = barcode_map[tracking]
+                    print(f"DEBUG - Gerando código de barras específico para {tracking}: {barcode_value}")
+                    current_barcode_img = generate_code128_image(barcode_value)
+                elif barcode_img:
+                    # Fallback para o código de barras padrão
+                    current_barcode_img = barcode_img
+                
+                if current_barcode_img:
                     # Rotacionar código de barras para posição vertical
-                    barcode_img_rotated = barcode_img.rotate(90, expand=True)
+                    barcode_img_rotated = current_barcode_img.rotate(90, expand=True)
                     
                     # Inserir barcode na lateral superior direita da etiqueta (vertical)
                     barcode_width = 120  # Largura aumentada para garantir visibilidade completa dos 44 dígitos
@@ -541,35 +552,45 @@ def process_etiqueta(etiqueta_path: str,
     except Exception:
         pass
 
-    # escolher o melhor barcode:
+    # Mapear códigos de barras para tracking codes específicos
+    barcode_map = {}  # tracking_code -> barcode_value
     barcode_img = None
     barcode_base64 = None
 
-    # Se for DANFE:
-    # - prioridade 1: se temos a chave extraída do texto, usar ela (mais confiável)
-    # - prioridade 2: se encontramos um código legível que seja 44 dígitos
-    chosen_bar_val = None
-    
     # Debug: imprimir valores encontrados
     print(f"DEBUG - Valores de códigos de barras encontrados: {barcode_values}")
     print(f"DEBUG - Chave de acesso extraída: {chave}")
     print(f"DEBUG - É DANFE: {is_danfe}")
+    print(f"DEBUG - Tracking codes encontrados: {all_tracking_codes}")
     
     if is_danfe:
+        # Encontrar todos os códigos de barras de 44 dígitos
+        valid_barcodes = []
+        
         # PRIORIDADE 1: Usar a chave extraída do texto (mais confiável)
         if chave:
-            chosen_bar_val = chave
-            print(f"DEBUG - Usando chave de acesso extraída do texto: {chosen_bar_val}")
-        else:
-            # PRIORIDADE 2: Procurar nos códigos de barras lidos
-            for val in barcode_values:
-                if re.fullmatch(r"\d{44}", re.sub(r"\D", "", val or "")):
-                    chosen_bar_val = re.sub(r"\D", "", val)
-                    print(f"DEBUG - Usando código de barras lido: {chosen_bar_val}")
-                    break
+            valid_barcodes.append(chave)
+            print(f"DEBUG - Adicionando chave de acesso extraída: {chave}")
+        
+        # PRIORIDADE 2: Procurar nos códigos de barras lidos
+        for val in barcode_values:
+            clean_val = re.sub(r"\D", "", val or "")
+            if re.fullmatch(r"\d{44}", clean_val) and clean_val not in valid_barcodes:
+                valid_barcodes.append(clean_val)
+                print(f"DEBUG - Adicionando código de barras lido: {clean_val}")
 
-        if chosen_bar_val:
-            print(f"DEBUG - Valor final escolhido para código de barras: {chosen_bar_val}")
+        print(f"DEBUG - Códigos de barras válidos encontrados: {valid_barcodes}")
+        
+        # Mapear códigos de barras para tracking codes baseado na ordem de aparição
+        for i, tracking_code in enumerate(all_tracking_codes):
+            if i < len(valid_barcodes):
+                barcode_map[tracking_code] = valid_barcodes[i]
+                print(f"DEBUG - Mapeando {tracking_code} -> {valid_barcodes[i]}")
+        
+        # Para compatibilidade, gerar uma imagem do primeiro código (será substituída depois)
+        if valid_barcodes:
+            chosen_bar_val = valid_barcodes[0]
+            print(f"DEBUG - Valor inicial escolhido para código de barras: {chosen_bar_val}")
             print(f"DEBUG - Gerando código de barras com valor: {chosen_bar_val}")
             barcode_img = generate_code128_image(chosen_bar_val)
             print(f"DEBUG - Código de barras gerado com sucesso")
@@ -602,7 +623,7 @@ def process_etiqueta(etiqueta_path: str,
                 all_produtos.extend(produtos_tc)
 
     # Gerar etiqueta composta (PDF) com TODOS os tracking codes e produtos
-    compose_output_pdf_multiple(Path(out_pdf_path), all_tracking_info, destinatario, barcode_img, chave, path)
+    compose_output_pdf_multiple(Path(out_pdf_path), all_tracking_info, destinatario, barcode_img, chave, path, barcode_map)
 
     return {
         "arquivo": str(path.name),
