@@ -143,8 +143,38 @@ def decode_barcodes_from_images(images: List[Image.Image]) -> List[str]:
 
 def generate_code128_image(data: str) -> Image.Image:
     """Gera Code128 (PNG) para a string (ex.: chave de acesso)."""
+    print(f"DEBUG - generate_code128_image recebeu: '{data}' (comprimento: {len(data)})")
+    
+    # Teste: verificar se todos os dígitos estão presentes
+    if len(data) == 44:
+        print(f"DEBUG - Primeiros 10 dígitos: {data[:10]}")
+        print(f"DEBUG - Últimos 10 dígitos: {data[-10:]}")
+        print(f"DEBUG - Valor completo: {data}")
+    
     fp = io.BytesIO()
-    Code128(data, writer=ImageWriter()).write(fp, options={"module_height": 20.0, "font_size": 10})
+    # Aumentando module_height para tamanho real e font_size para melhor legibilidade
+    barcode_obj = Code128(data, writer=ImageWriter())
+    print(f"DEBUG - Code128 criado com valor original: '{data}'")
+    print(f"DEBUG - Code128 propriedade .code: '{barcode_obj.code}'")
+    print(f"DEBUG - Comprimento do código interno: {len(barcode_obj.code)}")
+    print(f"DEBUG - Valores são iguais? {data == barcode_obj.code}")
+    
+    # Verificar se há alguma diferença caractere por caractere
+    if data != barcode_obj.code:
+        print(f"DEBUG - DIFERENÇA DETECTADA!")
+        print(f"DEBUG - Original: '{data}'")
+        print(f"DEBUG - Code obj: '{barcode_obj.code}'")
+        for i, (c1, c2) in enumerate(zip(data, barcode_obj.code)):
+            if c1 != c2:
+                print(f"DEBUG - Diferença na posição {i}: '{c1}' vs '{c2}'")
+    
+    barcode_obj.write(fp, options={
+        "module_height": 25.0, 
+        "font_size": 14,      # Fonte maior para melhor legibilidade
+        "module_width": 0.8,  # Largura das barras mais fina para caber mais dígitos
+        "quiet_zone": 2.0,    # Zona silenciosa menor
+        "text_distance": 8.0  # Distância maior para evitar sobreposição
+    })
     fp.seek(0)
     return Image.open(fp)
 
@@ -272,18 +302,20 @@ def compose_output_pdf(out_path: Path,
             y = height - 50
 
     if barcode_img:
-        # Inserir barcode na lateral superior direita da etiqueta
-        barcode_width = 150  # Largura do código de barras
-        barcode_height = 50  # Altura do código de barras
+        # Rotacionar código de barras para posição vertical
+        barcode_img_rotated = barcode_img.rotate(90, expand=True)
         
-        # Posição: lateral superior direita com margem
-        barcode_x = width - barcode_width - 20  # 20 pontos de margem da direita
-        barcode_y = height - barcode_height - 20  # 20 pontos de margem do topo
+        # Inserir barcode na lateral superior direita da etiqueta (vertical)
+        barcode_width = 120  # Largura aumentada para garantir visibilidade completa dos 44 dígitos
+        barcode_height = 300 # Altura aumentada para acomodar 44 dígitos completos
         
-        c.setFont("Helvetica", 8)
-        c.drawString(barcode_x, barcode_y - 15, "Código DANFE")
+        # Posição: lateral superior direita com margem menor
+        barcode_x = width - barcode_width - 10  # 10 pontos de margem da direita
+        barcode_y = height - barcode_height - 10  # 10 pontos de margem do topo
+        
+
         bio = io.BytesIO()
-        barcode_img.save(bio, format="PNG")
+        barcode_img_rotated.save(bio, format="PNG")
         bio.seek(0)
         c.drawImage(ImageReader(bio), barcode_x, barcode_y, 
                    width=barcode_width, height=barcode_height, 
@@ -303,15 +335,29 @@ def compose_output_pdf_multiple(out_path: Path,
     from reportlab.platypus import Table, TableStyle
     from reportlab.lib import colors
 
-    # Converter todas as etiquetas originais para imagens de alta qualidade
+    # Converter todas as páginas originais para imagens de alta qualidade
     original_images = []
+    etiqueta_images = []  # Apenas páginas de etiquetas (não DANFE)
+    
     if original_etiqueta_path and original_etiqueta_path.exists():
         try:
             if original_etiqueta_path.suffix.lower() == ".pdf":
                 original_images = pdf_to_high_quality_images(original_etiqueta_path)
+                
+                # Filtrar apenas páginas de etiquetas (não DANFE)
+                # Assumindo que páginas DANFE contêm texto específico
+                with pdfplumber.open(str(original_etiqueta_path)) as pdf:
+                    for idx, page in enumerate(pdf.pages):
+                        page_text = page.extract_text() or ""
+                        # Se a página não contém indicadores de DANFE, é uma etiqueta
+                        if not any(keyword in page_text.upper() for keyword in ['DANFE', 'DOCUMENTO AUXILIAR', 'NOTA FISCAL ELETRÔNICA']):
+                            if idx < len(original_images):
+                                etiqueta_images.append(original_images[idx])
+                        else:
+                            print(f"Página DANFE detectada e removida: página {idx + 1}")
             else:
                 # Se for imagem diretamente
-                original_images = [Image.open(original_etiqueta_path)]
+                etiqueta_images = [Image.open(original_etiqueta_path)]
         except Exception as e:
             print(f"Erro ao carregar etiquetas originais: {e}")
 
@@ -321,9 +367,9 @@ def compose_output_pdf_multiple(out_path: Path,
         produtos = info["produtos"]
         
         # Desenhar a etiqueta original correspondente (1º código = 1ª etiqueta, etc.)
-        if idx < len(original_images):
+        if idx < len(etiqueta_images):
             try:
-                original_img = original_images[idx]
+                original_img = etiqueta_images[idx]
                 
                 # Converter para bytes para usar com ImageReader, mantendo qualidade máxima
                 img_bytes = io.BytesIO()
@@ -344,6 +390,27 @@ def compose_output_pdf_multiple(out_path: Path,
                 c.drawImage(img_reader, x_offset, y_offset, 
                           width=img_width, height=img_height, 
                           preserveAspectRatio=True, anchor='c')
+                
+                # ADICIONAR CÓDIGO DE BARRAS NA ETIQUETA (se disponível)
+                if barcode_img:
+                    # Rotacionar código de barras para posição vertical
+                    barcode_img_rotated = barcode_img.rotate(90, expand=True)
+                    
+                    # Inserir barcode na lateral superior direita da etiqueta (vertical)
+                    barcode_width = 120  # Largura aumentada para garantir visibilidade completa dos 44 dígitos
+                    barcode_height = 300 # Altura aumentada para acomodar 44 dígitos completos
+                    
+                    # Posição: lateral superior direita com margem menor
+                    barcode_x = width - barcode_width - 10  # 10 pontos de margem da direita
+                    barcode_y = height - barcode_height - 10  # 10 pontos de margem do topo
+                    
+
+                    bio = io.BytesIO()
+                    barcode_img_rotated.save(bio, format="PNG")
+                    bio.seek(0)
+                    c.drawImage(ImageReader(bio), barcode_x, barcode_y, 
+                               width=barcode_width, height=barcode_height, 
+                               preserveAspectRatio=True, mask='auto')
                 
             except Exception as e:
                 print(f"Erro ao incluir etiqueta {idx + 1}: {e}")
@@ -422,25 +489,7 @@ def compose_output_pdf_multiple(out_path: Path,
         if idx < len(tracking_info) - 1:
             c.showPage()
 
-    if barcode_img:
-        # Inserir barcode na lateral superior direita da etiqueta
-        # Posicionar no canto superior direito de cada página de etiqueta
-        barcode_width = 150  # Largura do código de barras
-        barcode_height = 50  # Altura do código de barras
-        
-        # Posição: lateral superior direita com margem
-        barcode_x = width - barcode_width - 20  # 20 pontos de margem da direita
-        barcode_y = height - barcode_height - 20  # 20 pontos de margem do topo
-        
-        c.setFont("Helvetica", 8)
-        c.drawString(barcode_x, barcode_y - 15, "Código DANFE")
-        bio = io.BytesIO()
-        barcode_img.save(bio, format="PNG")
-        bio.seek(0)
-        c.drawImage(ImageReader(bio), barcode_x, barcode_y, 
-                   width=barcode_width, height=barcode_height, 
-                   preserveAspectRatio=True, mask='auto')
-
+    # Código de barras agora é adicionado diretamente em cada etiqueta no loop acima
     c.save()
 
 def process_etiqueta(etiqueta_path: str,
@@ -497,20 +546,33 @@ def process_etiqueta(etiqueta_path: str,
     barcode_base64 = None
 
     # Se for DANFE:
-    # - prioridade 1: se encontramos um código legível que seja 44 dígitos
-    # - prioridade 2: se temos a chave, gerar Code128
+    # - prioridade 1: se temos a chave extraída do texto, usar ela (mais confiável)
+    # - prioridade 2: se encontramos um código legível que seja 44 dígitos
     chosen_bar_val = None
-    for val in barcode_values:
-        if re.fullmatch(r"\d{44}", re.sub(r"\D", "", val or "")):
-            chosen_bar_val = re.sub(r"\D", "", val)
-            break
-
+    
+    # Debug: imprimir valores encontrados
+    print(f"DEBUG - Valores de códigos de barras encontrados: {barcode_values}")
+    print(f"DEBUG - Chave de acesso extraída: {chave}")
+    print(f"DEBUG - É DANFE: {is_danfe}")
+    
     if is_danfe:
-        if not chosen_bar_val and chave:
+        # PRIORIDADE 1: Usar a chave extraída do texto (mais confiável)
+        if chave:
             chosen_bar_val = chave
+            print(f"DEBUG - Usando chave de acesso extraída do texto: {chosen_bar_val}")
+        else:
+            # PRIORIDADE 2: Procurar nos códigos de barras lidos
+            for val in barcode_values:
+                if re.fullmatch(r"\d{44}", re.sub(r"\D", "", val or "")):
+                    chosen_bar_val = re.sub(r"\D", "", val)
+                    print(f"DEBUG - Usando código de barras lido: {chosen_bar_val}")
+                    break
 
         if chosen_bar_val:
+            print(f"DEBUG - Valor final escolhido para código de barras: {chosen_bar_val}")
+            print(f"DEBUG - Gerando código de barras com valor: {chosen_bar_val}")
             barcode_img = generate_code128_image(chosen_bar_val)
+            print(f"DEBUG - Código de barras gerado com sucesso")
             # salvar em base64 também
             bbuf = io.BytesIO()
             barcode_img.save(bbuf, format="PNG")

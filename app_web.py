@@ -53,8 +53,10 @@ def upload_file():
             file.save(filepath)
             
             # Processar arquivo
+            import time
+            timestamp = int(time.time())
             filename_without_ext = os.path.splitext(filename)[0]
-            enhanced_output = os.path.join(OUTPUT_FOLDER, f"{filename_without_ext}_processado.pdf")
+            enhanced_output = os.path.join(OUTPUT_FOLDER, f"{filename_without_ext}_processado_{timestamp}.pdf")
             result = process_etiqueta(filepath, PRODUTOS_MAP, enhanced_output)
             
             # Tentar limpar arquivo de upload (não crítico se falhar)
