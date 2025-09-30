@@ -13,6 +13,9 @@ import pdfplumber
 from PIL import Image
 import pytesseract
 
+# Configurar caminho do tesseract no Windows
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
 try:
     from pyzbar.pyzbar import decode as zbar_decode
 except Exception:
@@ -27,6 +30,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
 TRACKING_RE = re.compile(r"\b([A-Z]{2}\d{9}[A-Z]{2})\b")
+MEL_TRACKING_RE = re.compile(r"\b(MEL\d+[A-Z0-9]+)\b")  # Padrão para códigos MEL do Mercado Livre
 CHAVE44_RE = re.compile(r"\b(\d{44})\b", re.MULTILINE)
 DEST_HINTS = [r"DESTINAT[ÁA]RIO", r"\bDEST\.\b", r"\bNOME DO DESTINAT[ÁA]RIO\b"]
 
@@ -65,7 +69,12 @@ def pdf_to_high_quality_images(path: Path) -> List[Image.Image]:
 
 def find_tracking(text_pages: List[str]) -> Optional[str]:
     for ptxt in text_pages:
+        # Primeiro tenta padrão tradicional (BR123456789BR)
         m = TRACKING_RE.search(ptxt)
+        if m:
+            return m.group(1)
+        # Depois tenta padrão MEL (MEL45596668620LMXDF01)
+        m = MEL_TRACKING_RE.search(ptxt)
         if m:
             return m.group(1)
     return None
@@ -501,7 +510,31 @@ def compose_output_pdf_multiple(out_path: Path,
             c.showPage()
 
     # Código de barras agora é adicionado diretamente em cada etiqueta no loop acima
-    c.save()
+    try:
+        print(f"DEBUG - Salvando PDF em: {out_path}")
+        c.save()
+        print(f"DEBUG - PDF salvo com sucesso")
+        
+        # Verificar se o arquivo foi criado e tem tamanho válido
+        if out_path.exists():
+            file_size = out_path.stat().st_size
+            print(f"DEBUG - Arquivo criado com tamanho: {file_size} bytes")
+            
+            # Tentar validar o PDF criado
+            try:
+                with pdfplumber.open(str(out_path)) as pdf:
+                    num_pages = len(pdf.pages)
+                    print(f"DEBUG - PDF validado com sucesso: {num_pages} páginas")
+            except Exception as validation_error:
+                print(f"ERRO - PDF criado está corrompido: {validation_error}")
+                raise Exception(f"PDF gerado está corrompido: {validation_error}")
+        else:
+            print(f"ERRO - Arquivo PDF não foi criado: {out_path}")
+            raise Exception("Arquivo PDF não foi criado")
+            
+    except Exception as save_error:
+        print(f"ERRO - Falha ao salvar PDF: {save_error}")
+        raise Exception(f"Erro ao gerar PDF: {save_error}")
 
 def process_etiqueta(etiqueta_path: str,
                      produtos_map: Dict[str, List[Dict[str, Any]]],
@@ -522,8 +555,15 @@ def process_etiqueta(etiqueta_path: str,
     # Buscar TODOS os tracking codes no texto
     all_tracking_codes = []
     for page in text_pages:
+        # Buscar padrão tradicional (BR123456789BR)
         matches = re.findall(r'[A-Z]{2}\d{9}[A-Z]{2}', page)
         for match in matches:
+            if match not in all_tracking_codes:
+                all_tracking_codes.append(match)
+        
+        # Buscar padrão MEL (MEL45596668620LMXDF01)
+        mel_matches = re.findall(r'MEL\d+[A-Z0-9]+', page)
+        for match in mel_matches:
             if match not in all_tracking_codes:
                 all_tracking_codes.append(match)
 
@@ -533,8 +573,15 @@ def process_etiqueta(etiqueta_path: str,
             imgs = pdf_to_images(path)
             ocr_pages = [ocr_image(img) for img in imgs]
             for page in ocr_pages:
+                # Buscar padrão tradicional
                 matches = re.findall(r'[A-Z]{2}\d{9}[A-Z]{2}', page)
                 for match in matches:
+                    if match not in all_tracking_codes:
+                        all_tracking_codes.append(match)
+                
+                # Buscar padrão MEL
+                mel_matches = re.findall(r'MEL\d+[A-Z0-9]+', page)
+                for match in mel_matches:
                     if match not in all_tracking_codes:
                         all_tracking_codes.append(match)
 
@@ -606,8 +653,23 @@ def process_etiqueta(etiqueta_path: str,
     # Verificar se algum tracking code está no mapa de produtos
     has_mapped_products = any(tc in produtos_map and produtos_map[tc] for tc in all_tracking_codes)
     
-    if is_danfe or has_mapped_products:
-        # Para DANFE ou quando há produtos mapeados, usar o mapa de produtos fornecido
+    if is_danfe:
+        # Para DANFE, criar uma entrada mesmo sem tracking codes específicos
+        if all_tracking_codes:
+            # Se há tracking codes, usar eles
+            for tc in all_tracking_codes:
+                produtos_tc = produtos_map.get(tc, [])
+                all_tracking_info.append({"tracking": tc, "produtos": produtos_tc})
+                all_produtos.extend(produtos_tc)
+        else:
+            # Se não há tracking codes, usar a chave de acesso como identificador
+            chave_identifier = chave or "DANFE"
+            produtos_tc = produtos_map.get(chave_identifier, [])
+            all_tracking_info.append({"tracking": chave_identifier, "produtos": produtos_tc})
+            all_produtos.extend(produtos_tc)
+            print(f"DEBUG - DANFE sem tracking codes, usando chave: {chave_identifier}")
+    elif has_mapped_products:
+        # Para não-DANFE com produtos mapeados, usar o mapa de produtos fornecido
         for tc in all_tracking_codes:
             produtos_tc = produtos_map.get(tc, [])
             if produtos_tc:
@@ -623,7 +685,16 @@ def process_etiqueta(etiqueta_path: str,
                 all_produtos.extend(produtos_tc)
 
     # Gerar etiqueta composta (PDF) com TODOS os tracking codes e produtos
-    compose_output_pdf_multiple(Path(out_pdf_path), all_tracking_info, destinatario, barcode_img, chave, path, barcode_map)
+    print(f"DEBUG - Iniciando geração do PDF: {out_pdf_path}")
+    print(f"DEBUG - Tracking info: {len(all_tracking_info)} códigos")
+    print(f"DEBUG - Produtos totais: {len(all_produtos)}")
+    
+    try:
+        compose_output_pdf_multiple(Path(out_pdf_path), all_tracking_info, destinatario, barcode_img, chave, path, barcode_map)
+        print(f"DEBUG - PDF gerado com sucesso: {out_pdf_path}")
+    except Exception as pdf_error:
+        print(f"ERRO - Falha na geração do PDF: {pdf_error}")
+        raise Exception(f"Erro ao gerar PDF: {pdf_error}")
 
     return {
         "arquivo": str(path.name),

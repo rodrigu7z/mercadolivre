@@ -25,6 +25,16 @@ PRODUTOS_MAP = {
         {"sku": "ZX2225_2", "titulo": "Sandália Papete Brilho Luxo Em Eva Com Strass Leve Biaritz", "qtd": 1, "cor": "Nude", "tamanho": "38 BR"},
         {"sku": "ZX2225_2", "titulo": "Sandália Papete Brilho Luxo Em Eva Com Strass Leve Biaritz", "qtd": 1, "cor": "Branco", "tamanho": "39 BR"},
         {"sku": "ZX2225_2", "titulo": "Sandália Papete Brilho Luxo Em Eva Com Strass Leve Biaritz", "qtd": 1, "cor": "Preto", "tamanho": "39 BR"}
+    ],
+    # Códigos MEL do Mercado Livre
+    "MEL45596668620LMXDF01": [
+        {"sku": "502575", "titulo": "Chinelo Infantil Capivara Slide Capivara Leve Confortavel", "qtd": 2, "cor": "Bege/Marrom", "tamanho": "30 BR"}
+    ],
+    "MEL45596155115LMXDF01": [
+        {"sku": "502259", "titulo": "Babouche Mickey Cupcake Infantil Menina Leve Confortavel", "qtd": 1, "cor": "Preto", "tamanho": "23 BR"}
+    ],
+    "MEL45595550199LMXDF01": [
+        {"sku": "502576", "titulo": "Chinelo Infantil Capivara Slide Capivara Leve Confortavel", "qtd": 1, "cor": "Rosa Bebê/Pink", "tamanho": "28 BR"}
     ]
 }
 
@@ -51,6 +61,29 @@ def upload_file():
             filename = secure_filename(file.filename)
             filepath = os.path.join(UPLOAD_FOLDER, filename)
             file.save(filepath)
+            
+            # Validar PDF se for um arquivo PDF
+            if filename.lower().endswith('.pdf'):
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(filepath) as pdf:
+                        # Tentar acessar a primeira página para validar o PDF
+                        if len(pdf.pages) == 0:
+                            raise Exception("PDF vazio ou sem páginas")
+                        # Tentar extrair texto da primeira página
+                        first_page = pdf.pages[0]
+                        first_page.extract_text()
+                except Exception as pdf_error:
+                    # Limpar arquivo inválido
+                    try:
+                        if os.path.exists(filepath):
+                            os.remove(filepath)
+                    except:
+                        pass
+                    return jsonify({
+                        'success': False,
+                        'error': 'O arquivo PDF está corrompido, danificado ou em um formato não suportado. Por favor, verifique o arquivo e tente novamente.'
+                    })
             
             # Processar arquivo
             import time
@@ -81,10 +114,23 @@ def upload_file():
             except (PermissionError, OSError):
                 pass
             
-            return jsonify({
-                'success': False,
-                'error': f'Erro ao processar arquivo: {str(e)}'
-            })
+            # Detectar tipos específicos de erro
+            error_message = str(e).lower()
+            if 'pdf' in error_message and ('corrupt' in error_message or 'damaged' in error_message or 'invalid' in error_message or 'not a pdf' in error_message):
+                return jsonify({
+                    'success': False,
+                    'error': 'O arquivo PDF está corrompido ou danificado. Por favor, verifique o arquivo e tente novamente com um PDF válido.'
+                })
+            elif 'pdfplumber' in error_message or 'pdf' in error_message:
+                return jsonify({
+                    'success': False,
+                    'error': 'Não foi possível abrir o arquivo PDF. O arquivo pode estar corrompido, protegido por senha ou em um formato não suportado.'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': f'Erro ao processar arquivo: {str(e)}'
+                })
     
     return jsonify({'success': False, 'error': 'Tipo de arquivo não permitido'})
 
